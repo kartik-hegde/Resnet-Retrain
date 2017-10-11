@@ -1,6 +1,8 @@
 # Resnet-Retrain
 This repository helps to train ResNet and dump the trained model - which can then be modified and reloaded to the network for retraining.
 
+This can be used for purposes like Weight Quantization etc.
+
 
 The original ResNet model is taken from the official Tensorflow ResNet model. 
 
