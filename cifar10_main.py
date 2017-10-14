@@ -231,7 +231,7 @@ def cifar10_model_fn(features, labels, mode):
  ##Dump the Data
  ##Set DUMP to False if you don't want to dump
   DUMP = FLAGS.dump
-  if ((mode == tf.estimator.ModeKeys.EVAL) and (DUMP == True)):
+  if ((mode == tf.estimator.ModeKeys.TRAIN) and (DUMP == True)):
   	with tf.Session() as sess:
 	    print("Dumping weights now")
 	    sess.run(tf.global_variables_initializer())
@@ -239,6 +239,7 @@ def cifar10_model_fn(features, labels, mode):
 	    # all the trainable variables
 
 	    model = get_weights()
+	    print(model)
 	    get_sessions = model.keys()
 	    print(get_sessions)
 	    for i in get_sessions:
@@ -249,7 +250,7 @@ def cifar10_model_fn(features, labels, mode):
 			    	print('Dumping weight variable:    ' + val + '   in Scope:    ' + i)
 				layer_data.append(sess.run(tf.get_variable(val.split(":")[0])))
 			    weights_cifar10[i]=layer_data
-	    np.save("weights_cifar10.npy",weights_cifar10)
+	    np.save("weights_cifar10_tmp.npy",weights_cifar10)
 	    sys.exit("Dump Finished")
 
   predictions = {

@@ -53,8 +53,46 @@ def _variable_on_cpu(data, addr, scope_name, name, shape, initializer):
   with tf.device('/cpu:0'):
     dtype = tf.float32
     print("Extracting   " + name + "  from Scope  " + scope_name)
-    var = tf.Variable(data[scope_name][addr[name+":0"]],name)
+    var = tf.get_variable(name, shape, initializer=initializer, dtype=dtype)
+    with tf.Session() as sess:
+	sess.run(var.assign(data[scope_name][addr[name+":0"]]))
+	sess.close()
+    	#var = tf.Variable(data[scope_name][addr[name+":0"]],name)
   return var
+
+def load_batch_norm(data,addr,scope_name, batch_norm_count):
+	var_count = '_'+str(batch_norm_count) if(batch_norm_count!=0) else ''
+	var_name = 'batch_normalization' +var_count if(scope_name=='') else scope_name + '/batch_normalization' +var_count
+	scope_name = 'batch_normalization' if(scope_name=='') else scope_name
+	var_beta_name = var_name + '/beta:0'
+	var_gamma_name = var_name + '/gamma:0'
+    	#print('there you go ' + str(tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)))
+  	with tf.Session() as sess:
+		var_beta = [v for v in tf.global_variables() if v.name == var_beta_name]
+		var_gamma = [v for v in tf.global_variables() if v.name == var_gamma_name]
+		print('Loading ' + str(var_beta) + '   and   ' + str(var_gamma))
+		##Remove scop_name from the variable name to load
+		var_beta_name= 'batch_normalization' +var_count + '/beta'
+		var_gamma_name = 'batch_normalization' +var_count + '/gamma'
+		##Assignt the right value to each variable
+		sess.run(var_beta[0].assign(data[scope_name][addr[var_beta_name+":0"]]))
+		sess.run(var_gamma[0].assign(data[scope_name][addr[var_gamma_name+":0"]]))
+		sess.close()
+
+def load_dense(data, addr, scope_name):
+	var_name_bias = scope_name+'/dense/bias:0'
+	var_name_kernel = scope_name+'/dense/kernel:0'
+  	with tf.Session() as sess:
+		var_bias = [v for v in tf.global_variables() if v.name == var_name_bias]
+		var_kernel = [v for v in tf.global_variables() if v.name == var_name_kernel]
+		print('Loading ' + str(var_bias) + '   and   ' + str(var_kernel))
+		##Remove scop_name from the variable name to load
+		var_bias_name= 'dense/bias'
+		var_kernel_name = 'dense/kernel'
+		##Assignt the right value to each variable
+		sess.run(var_bias[0].assign(data[scope_name][addr[var_bias_name+":0"]]))
+		sess.run(var_kernel[0].assign(data[scope_name][addr[var_kernel_name+":0"]]))
+		sess.close()
 
 def batch_norm_relu(inputs, is_training, data_format):
   """Performs a batch normalization followed by a ReLU."""
@@ -117,7 +155,7 @@ def conv2d_fixed_padding(inputs, filters, kernel_size, strides, data_format, nam
   return conv2d
 
 def building_block(inputs, filters, is_training, projection_shortcut, strides,
-                   name, scope_name, data, addr, data_format):
+                   name, scope_name, data, addr, batch_norm_count, data_format):
   """Standard building block for residual networks with BN before convolutions.
 
   Args:
@@ -138,6 +176,8 @@ def building_block(inputs, filters, is_training, projection_shortcut, strides,
   shortcut = inputs
   #print('Shortcut:' + str(shortcut))
   inputs = batch_norm_relu(inputs, is_training, data_format)
+  load_batch_norm(data,addr,scope_name,batch_norm_count)
+  batch_norm_count = batch_norm_count + 1
   # The projection shortcut should come after the first batch norm and ReLU
   # since it performs a 1x1 convolution.
   if projection_shortcut is not None:
@@ -149,6 +189,8 @@ def building_block(inputs, filters, is_training, projection_shortcut, strides,
       data_format=data_format, name=name+'_conv1')
   #print(inputs)
   inputs = batch_norm_relu(inputs, is_training, data_format)
+  load_batch_norm(data,addr,scope_name,batch_norm_count)
+  batch_norm_count = batch_norm_count + 1
   #print(inputs)
   inputs = conv2d_fixed_padding(
       data=data, addr=addr, scope_name=scope_name, inputs=inputs, filters=filters, kernel_size=3, strides=1,
@@ -159,7 +201,7 @@ def building_block(inputs, filters, is_training, projection_shortcut, strides,
 
 
 def bottleneck_block(inputs, filters, is_training, projection_shortcut,
-                     strides, name,scope_name, data, addr, data_format):
+                     strides, name,scope_name, data, addr, batch_norm_count, data_format):
   """Bottleneck block variant for residual networks with BN before convolutions.
 
   Args:
@@ -180,6 +222,8 @@ def bottleneck_block(inputs, filters, is_training, projection_shortcut,
   """
   shortcut = inputs
   inputs = batch_norm_relu(inputs, is_training, data_format)
+  load_batch_norm(data,addr,scope_name,batch_norm_count)
+  batch_norm_count = batch_norm_count + 1
 
   # The projection shortcut should come after the first batch norm and ReLU
   # since it performs a 1x1 convolution.
@@ -192,6 +236,8 @@ def bottleneck_block(inputs, filters, is_training, projection_shortcut,
       		data_format=data_format, name= name+'_conv1')
 
   inputs = batch_norm_relu(inputs, is_training, data_format)
+  load_batch_norm(data,addr,scope_name,batch_norm_count)
+  batch_norm_count = batch_norm_count + 1
   
   #with tf.variable_scope(name+'_conv2' , reuse=None) as scope:
   inputs = conv2d_fixed_padding(
@@ -199,6 +245,8 @@ def bottleneck_block(inputs, filters, is_training, projection_shortcut,
       		data_format=data_format, name= name+'_conv2')
 
   inputs = batch_norm_relu(inputs, is_training, data_format)
+  load_batch_norm(data,addr,scope_name,batch_norm_count)
+  batch_norm_count = batch_norm_count + 1
   #with tf.variable_scope(name+'_conv3' , reuse=None) as scope:
   inputs = conv2d_fixed_padding(
       		data=data, addr=addr, scope_name=scope_name,inputs=inputs, filters=4 * filters, kernel_size=1, strides=1,
@@ -208,7 +256,7 @@ def bottleneck_block(inputs, filters, is_training, projection_shortcut,
 
 
 def block_layer(inputs, filters, block_fn, blocks, strides, is_training, name,
-                data, addr, scope_name, data_format):
+                data, addr, scope_name, batch_norm_count, data_format):
   """Creates one layer of blocks for the ResNet model.
 
   Args:
@@ -238,10 +286,10 @@ def block_layer(inputs, filters, block_fn, blocks, strides, is_training, name,
 
   # Only the first block per block_layer uses projection_shortcut and strides
   inputs = block_fn(inputs, filters, is_training, projection_shortcut, strides,
-                    name, scope_name, data, addr ,data_format)
+                    name, scope_name, data, addr ,batch_norm_count, data_format)
 
   for i in range(1, blocks):
-    inputs = block_fn(inputs, filters, is_training, None, 1, name+str(i), scope_name, data, addr, data_format)
+    inputs = block_fn(inputs, filters, is_training, None, 1, name+str(i), scope_name, data, addr, batch_norm_count, data_format)
 
   return tf.identity(inputs, name)
 
@@ -271,7 +319,10 @@ def cifar10_resnet_v2_generator(resnet_size, num_classes, data_format=None):
   data = np.load("weights_cifar10.npy").item()
   addr = np.load("addr_table.npy").item()
 
+
   def model(inputs, is_training):
+    batch_norm_count = 0
+
     if data_format == 'channels_first':
       # Convert from channels_last (NHWC) to channels_first (NCHW). This
       # provides a large performance boost on GPU.
@@ -287,20 +338,29 @@ def cifar10_resnet_v2_generator(resnet_size, num_classes, data_format=None):
     with tf.variable_scope('block1', reuse=None) as scope:
       inputs = block_layer(
         data=data, addr=addr, scope_name='block1',inputs=inputs, filters=16, block_fn=building_block, blocks=num_blocks,
-        strides=1, is_training=is_training, name='block_layer1',
+        strides=1, is_training=is_training, name='block_layer1', batch_norm_count= batch_norm_count,
         data_format=data_format)
+
+    batch_norm_count = 0
+
     with tf.variable_scope('block2', reuse=None) as scope:
       inputs = block_layer(
         data=data, addr=addr, scope_name='block2',inputs=inputs, filters=32, block_fn=building_block, blocks=num_blocks,
-        strides=2, is_training=is_training, name='block_layer2',
+        strides=2, is_training=is_training, name='block_layer2', batch_norm_count= batch_norm_count,
         data_format=data_format)
+    
+    batch_norm_count = 0
+
     with tf.variable_scope('block3', reuse=None) as scope:
       inputs = block_layer(
         data=data, addr=addr, scope_name='block3', inputs=inputs, filters=64, block_fn=building_block, blocks=num_blocks,
-        strides=2, is_training=is_training, name='block_layer3',
+        strides=2, is_training=is_training, name='block_layer3',batch_norm_count= batch_norm_count,
         data_format=data_format)
 
+    batch_norm_count = 0
+
     inputs = batch_norm_relu(inputs, is_training, data_format)
+    load_batch_norm(data,addr,'',batch_norm_count)
     inputs = tf.layers.average_pooling2d(
         inputs=inputs, pool_size=8, strides=1, padding='VALID',
         data_format=data_format)
@@ -308,6 +368,7 @@ def cifar10_resnet_v2_generator(resnet_size, num_classes, data_format=None):
     inputs = tf.reshape(inputs, [-1, 64])
     with tf.variable_scope('dense_layer', reuse=None) as scope:
     	inputs = tf.layers.dense(inputs=inputs, units=num_classes)
+    load_dense(data,addr,'dense_layer')
     inputs = tf.identity(inputs, 'final_dense')
     return inputs
 
