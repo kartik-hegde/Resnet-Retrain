@@ -38,56 +38,14 @@ _BATCH_NORM_DECAY = 0.997
 _BATCH_NORM_EPSILON = 1e-5
 
 
-def _variable_on_cpu(name, shape, initializer):
-  """Helper to create a Variable stored on CPU memory.
-
-  Args:
-    name: name of the variable
-    shape: list of ints
-    initializer: initializer for Variable
-
-  Returns:
-    Variable Tensor
-  """
-  with tf.device('/cpu:0'):
-    dtype = tf.float32
-    var = tf.get_variable(name, shape, initializer=initializer, dtype=dtype)
-  return var
-
-
-def _variable_with_weight_decay(name, shape, stddev, wd):
-  """Helper to create an initialized Variable with weight decay.
-
-  Note that the Variable is initialized with a truncated normal distribution.
-  A weight decay is added only if one is specified.
-
-  Args:
-    name: name of the variable
-    shape: list of ints
-    stddev: standard deviation of a truncated Gaussian
-    wd: add L2Loss weight decay multiplied by this float. If None, weight
-        decay is not added for this Variable.
-
-  Returns:
-    Variable Tensor
-  """
-  dtype = tf.float32
-  var = _variable_on_cpu(
-      name,
-      shape,
-      tf.truncated_normal_initializer(stddev=stddev, dtype=dtype))
-  if wd is not None:
-    weight_decay = tf.multiply(tf.nn.l2_loss(var), wd, name='weight_loss')
-    tf.add_to_collection('losses', weight_decay)
-  return var
-
 def batch_norm_relu(inputs, is_training, data_format):
   """Performs a batch normalization followed by a ReLU."""
   # We set fused=True for a significant performance boost.
   # See https://www.tensorflow.org/performance/performance_guide#common_fused_ops
   inputs = tf.layers.batch_normalization(
       inputs=inputs, axis=1 if data_format == 'channels_first' else 3,
-      momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON, center=True,
+      #momentum=_BATCH_NORM_DECAY, epsilon=_BATCH_NORM_EPSILON, 
+      center=True,
       scale=True, training=is_training, fused=True)
   inputs = tf.nn.relu(inputs)
   return inputs
@@ -120,7 +78,7 @@ def fixed_padding(inputs, kernel_size, data_format):
   return padded_inputs
 
 
-def conv2d_fixed_padding(inputs, filters, kernel_size, strides, data_format, name):
+def conv2d_fixed_padding(inputs, filters, kernel_size, strides, data_format):
   """Strided 2-D convolution with explicit padding.
 
   The padding is consistent and is based only on `kernel_size`, not on the
@@ -128,21 +86,18 @@ def conv2d_fixed_padding(inputs, filters, kernel_size, strides, data_format, nam
   """
   if strides > 1:
     inputs = fixed_padding(inputs, kernel_size, data_format)
-  #print(name)
-  if data_format == 'channels_first':
-  	inp_channels = inputs.get_shape().as_list()[1]
-	pass_string = 'NCHW'
-	stride = [1,1, strides, strides]
-  if data_format == 'channels_last':
-  	inp_channels = inputs.get_shape().as_list()[3]
-	stride = [1, strides, strides,1]
-	pass_string = 'NHWC'
-  kernel = _variable_on_cpu('weights_'+name, [kernel_size, kernel_size, inp_channels, filters] ,tf.variance_scaling_initializer()) 
-  conv2d =  tf.nn.conv2d(inputs, kernel, stride , padding=('SAME' if strides == 1 else 'VALID'), data_format=pass_string)
-  return conv2d
+
+  conv =  tf.layers.conv2d(
+      inputs=inputs, filters=filters, kernel_size=kernel_size, strides=strides,
+      padding=('SAME' if strides == 1 else 'VALID'), use_bias=False,
+      kernel_initializer=tf.variance_scaling_initializer(),
+      data_format=data_format)
+
+  return conv
+
 
 def building_block(inputs, filters, is_training, projection_shortcut, strides,
-                   name, data_format):
+                   data_format):
   """Standard building block for residual networks with BN before convolutions.
 
   Args:
@@ -161,30 +116,27 @@ def building_block(inputs, filters, is_training, projection_shortcut, strides,
     The output tensor of the block.
   """
   shortcut = inputs
-  #print('Shortcut:' + str(shortcut))
   inputs = batch_norm_relu(inputs, is_training, data_format)
+
   # The projection shortcut should come after the first batch norm and ReLU
   # since it performs a 1x1 convolution.
   if projection_shortcut is not None:
     shortcut = projection_shortcut(inputs)
 
-  #print('Shortcut:' + str(shortcut))
   inputs = conv2d_fixed_padding(
       inputs=inputs, filters=filters, kernel_size=3, strides=strides,
-      data_format=data_format, name=name+'_conv1')
-  #print(inputs)
+      data_format=data_format)
+
   inputs = batch_norm_relu(inputs, is_training, data_format)
-  #print(inputs)
   inputs = conv2d_fixed_padding(
       inputs=inputs, filters=filters, kernel_size=3, strides=1,
-      data_format=data_format, name=name+'_conv2')
-  #print(inputs)
+      data_format=data_format)
 
   return inputs + shortcut
 
 
 def bottleneck_block(inputs, filters, is_training, projection_shortcut,
-                     strides, name, data_format):
+                     strides, data_format):
   """Bottleneck block variant for residual networks with BN before convolutions.
 
   Args:
@@ -211,23 +163,19 @@ def bottleneck_block(inputs, filters, is_training, projection_shortcut,
   if projection_shortcut is not None:
     shortcut = projection_shortcut(inputs)
 
-  #with tf.variable_scope(name+'_conv1' , reuse=None) as scope:
   inputs = conv2d_fixed_padding(
-      		inputs=inputs, filters=filters, kernel_size=1, strides=1,
-      		data_format=data_format, name= name+'_conv1')
+      inputs=inputs, filters=filters, kernel_size=1, strides=1,
+      data_format=data_format)
 
   inputs = batch_norm_relu(inputs, is_training, data_format)
-  
-  #with tf.variable_scope(name+'_conv2' , reuse=None) as scope:
   inputs = conv2d_fixed_padding(
-      		inputs=inputs, filters=filters, kernel_size=3, strides=strides,
-      		data_format=data_format, name= name+'_conv2')
+      inputs=inputs, filters=filters, kernel_size=3, strides=strides,
+      data_format=data_format)
 
   inputs = batch_norm_relu(inputs, is_training, data_format)
-  #with tf.variable_scope(name+'_conv3' , reuse=None) as scope:
   inputs = conv2d_fixed_padding(
-      		inputs=inputs, filters=4 * filters, kernel_size=1, strides=1,
-      		data_format=data_format, name= name+'_conv3')
+      inputs=inputs, filters=4 * filters, kernel_size=1, strides=1,
+      data_format=data_format)
 
   return inputs + shortcut
 
@@ -257,16 +205,16 @@ def block_layer(inputs, filters, block_fn, blocks, strides, is_training, name,
   filters_out = 4 * filters if block_fn is bottleneck_block else filters
 
   def projection_shortcut(inputs):
-    	return conv2d_fixed_padding(
-        	inputs=inputs, filters=filters_out, kernel_size=1, strides=strides,
-        	data_format=data_format, name= name+'_proj')
+    return conv2d_fixed_padding(
+        inputs=inputs, filters=filters_out, kernel_size=1, strides=strides,
+        data_format=data_format)
 
   # Only the first block per block_layer uses projection_shortcut and strides
   inputs = block_fn(inputs, filters, is_training, projection_shortcut, strides,
-                    name, data_format)
+                    data_format)
 
   for i in range(1, blocks):
-    inputs = block_fn(inputs, filters, is_training, None, 1, name+str(i), data_format)
+    inputs = block_fn(inputs, filters, is_training, None, 1, data_format)
 
   return tf.identity(inputs, name)
 
@@ -299,24 +247,20 @@ def cifar10_resnet_v2_generator(resnet_size, num_classes, data_format=None):
       # See https://www.tensorflow.org/performance/performance_guide#data_formats
       inputs = tf.transpose(inputs, [0, 3, 1, 2])
 
-    with tf.variable_scope('conv1' , reuse=None) as scope:
-      inputs = conv2d_fixed_padding(
+    inputs = conv2d_fixed_padding(
         inputs=inputs, filters=16, kernel_size=3, strides=1,
-        data_format=data_format, name= 'conv0')
-      inputs = tf.identity(inputs, 'initial_conv')
+        data_format=data_format)
+    inputs = tf.identity(inputs, 'initial_conv')
 
-    with tf.variable_scope('block1', reuse=None) as scope:
-      inputs = block_layer(
+    inputs = block_layer(
         inputs=inputs, filters=16, block_fn=building_block, blocks=num_blocks,
         strides=1, is_training=is_training, name='block_layer1',
         data_format=data_format)
-    with tf.variable_scope('block2', reuse=None) as scope:
-      inputs = block_layer(
+    inputs = block_layer(
         inputs=inputs, filters=32, block_fn=building_block, blocks=num_blocks,
         strides=2, is_training=is_training, name='block_layer2',
         data_format=data_format)
-    with tf.variable_scope('block3', reuse=None) as scope:
-      inputs = block_layer(
+    inputs = block_layer(
         inputs=inputs, filters=64, block_fn=building_block, blocks=num_blocks,
         strides=2, is_training=is_training, name='block_layer3',
         data_format=data_format)
@@ -327,8 +271,7 @@ def cifar10_resnet_v2_generator(resnet_size, num_classes, data_format=None):
         data_format=data_format)
     inputs = tf.identity(inputs, 'final_avg_pool')
     inputs = tf.reshape(inputs, [-1, 64])
-    with tf.variable_scope('dense_layer', reuse=None) as scope:
-    	inputs = tf.layers.dense(inputs=inputs, units=num_classes)
+    inputs = tf.layers.dense(inputs=inputs, units=num_classes)
     inputs = tf.identity(inputs, 'final_dense')
     return inputs
 

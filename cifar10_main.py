@@ -23,7 +23,7 @@ import sys
 
 import numpy as np
 import tensorflow as tf
-
+import resnet_model as resnet
 
 PWD = os.getcwd()
 
@@ -61,15 +61,16 @@ parser.add_argument('--retrain', type=bool, default=False,
 parser.add_argument('--dump', type=bool, default=False,
                     help='Do you want to dump the data?')
 
+parser.add_argument('--ckpt_file', type=str, default='model.ckpt',
+                    help='Last saved model')
+
 FLAGS = parser.parse_args()
 
 RETRAIN = FLAGS.retrain
 
 if RETRAIN:
-	import resnet_model_retrain as resnet
+	model_dir_saved = FLAGS.model_dir
 	FLAGS.model_dir = FLAGS.model_dir + '_retrain'
-else:
-	import resnet_model as resnet
 
 # Scale the learning rate linearly with the batch size. When the batch size is
 # 128, the learning rate should be 0.1.
@@ -83,24 +84,36 @@ _WEIGHT_DECAY = 2e-4
 _BATCHES_PER_EPOCH = NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN / FLAGS.batch_size
 
 
-def get_weights():
+def get_weights(dump):
     """
     From the stored model, get all the trainable variables,
     and return a dictionary of all the corresponding variables
     """
-    var = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+    ## Get all the variable names
+    var = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
+
+    #Define a dictionary whose keys are scope names and values are variables
     model = dict()
+
+    ##Define a dictionary to store the addresses of each variable in the 'model' dictionary
+    # This is useful for reloading
     addr_table = dict()
+
+    # GO through every variable and group all the variables with same scope
     for i,item in enumerate(var):
     	temp_var = str(var[i]).split("'")[1].split("/")
+	
 	#The first part is the scope
 	scope = temp_var[0]
-	if(len(temp_var) < 3):
+	
+	if(len(temp_var)==1):
+		path=temp_var[0]
+	elif(len(temp_var) < 3):
 		path = temp_var[1]
 	else:
 		path  = temp_var[1]+'/'+temp_var[2]
 
-	print(scope)
+	# Add them to the dictionary
 	if scope in model:
 		model[scope].append(path)
 		count = count + 1
@@ -110,8 +123,11 @@ def get_weights():
 		count = 0
 		addr_table[path] = count
 	
-    ##Save the address Table 
-    np.save("addr_table.npy", addr_table)
+    ##Save the address Table if you are dumping weights
+    if dump:
+    	np.save("addr_table.npy", addr_table)
+
+    # Return the model dictionary
     return model
 
 def record_dataset(filenames):
@@ -217,9 +233,23 @@ def input_fn(mode, batch_size):
 
   return images, labels
 
+def save(saver, sess, logdir):
+	"""
+	Saves the checkpoint file
+	"""
+	#Default model name
+	model_name = 'model.ckpt'
+    	checkpoint_path = os.path.join(logdir, model_name)
+
+    	saver.save(sess, checkpoint_path, write_meta_graph=False)
+
 
 def cifar10_model_fn(features, labels, mode):
   """Model function for CIFAR-10."""
+
+  ##temporary solution to run load only once
+  global load_done
+
   tf.summary.image('images', features, max_outputs=6)
 
   network = resnet.cifar10_resnet_v2_generator(
@@ -227,31 +257,98 @@ def cifar10_model_fn(features, labels, mode):
 
   inputs = tf.reshape(features, [-1, HEIGHT, WIDTH, DEPTH])
   logits = network(inputs, mode == tf.estimator.ModeKeys.TRAIN)
+ 
+ ## All the required modifications are here.
 
- ##Dump the Data
- ##Set DUMP to False if you don't want to dump
+ ## Since this routine uses tf.estimators to implement ResNet, if we would like to
+ ## dump or reload the data, only method of communication is Checkpoints.
+ ## Therefore, each commands are seperately called.
+
+
+
+ ## Load the data##
+
+ ## Executed only if the retrain flag is set
+ ## Also, load happens only once in the retrain cycle
+  RETRAIN = FLAGS.retrain
+  if((load_done == 0) and RETRAIN):
+    	load_done = 1 
+  	print("Loading pretrained weights")
+  	
+	## Load the modified/pre-trained weight values
+	data = np.load("weights_cifar10.npy").item()
+  	addr = np.load("addr_table.npy").item()
+	
+	## Path to the most recent Check-point file
+	model_path = model_dir_saved +'/'+FLAGS.ckpt_file
+    	
+	with tf.Session() as sess:
+
+		## All variables should be initialized
+  		sess.run(tf.global_variables_initializer())
+
+		## Define the Saver instance vbased on the check-point file
+  		saver = tf.train.Saver(tf.global_variables())
+  		saver.restore(sess, model_path)
+
+		## Get all the variable names in the required format
+  		model = get_weights(dump=False)
+  	    	get_sessions = model.keys()
+
+		## Go through every scope
+  	    	for i in get_sessions:
+  	          if 'global_step' not in i:
+  		    with tf.variable_scope(i, reuse=True):
+		    	    ## Go through every variable in the scope, with Reuse
+  			    for val in model[i]:
+  			    	print('Loading weight variable:    ' + val + '   in Scope:    ' + i)
+
+				## Assign the loaded value to the weights
+  				var = tf.get_variable(val.split(":")[0], trainable=False)
+  				sess.run(var.assign(data[i][addr[val]]))
+  		
+		## Save the model in the Retrain directory
+  		saver.save(sess, FLAGS.model_dir + '/model.ckpt')
+  	print("data successfully loaded")
+
+ ##Dump the Data##
+
+ ## Set DUMP to False if you don't want to dump
+ ## After the dump, the program ends
   DUMP = FLAGS.dump
   if ((mode == tf.estimator.ModeKeys.TRAIN) and (DUMP == True)):
   	with tf.Session() as sess:
 	    print("Dumping weights now")
-	    sess.run(tf.global_variables_initializer())
 	    weights_cifar10=dict()
-	    # all the trainable variables
 
-	    model = get_weights()
-	    print(model)
+	    ## All variables should be initialized
+  	    sess.run(tf.global_variables_initializer())
+  	    
+	    ## Define the Saver instance vbased on the check-point file
+	    saver = tf.train.Saver(tf.global_variables())
+  	    saver.restore(sess, FLAGS.model_dir +'/'+FLAGS.ckpt_file)
+	    
+	    ## Get all the variables
+	    model = get_weights(dump=True)
 	    get_sessions = model.keys()
-	    print(get_sessions)
+	    
+	    ## Go through every scope
 	    for i in get_sessions:
-	       #if 'norm' not in i:
+	    	if 'global_step' not in i:
 		    with tf.variable_scope(i, reuse=True):
+		    	    ## Go through every variable in the scope, with Reuse
 			    layer_data=[]
 			    for val in model[i]:
 			    	print('Dumping weight variable:    ' + val + '   in Scope:    ' + i)
+				## Append each variable value to a file
 				layer_data.append(sess.run(tf.get_variable(val.split(":")[0])))
 			    weights_cifar10[i]=layer_data
-	    np.save("weights_cifar10_tmp.npy",weights_cifar10)
-	    sys.exit("Dump Finished")
+
+	    ## Save them to a npy file
+	    np.save("weights_cifar10.npy",weights_cifar10)
+	    ## Exit the program
+	    sys.exit("Dump Finished, Exiting ...")
+
 
   predictions = {
       'classes': tf.argmax(logits, axis=1),
@@ -286,9 +383,8 @@ def cifar10_model_fn(features, labels, mode):
     tf.identity(learning_rate, name='learning_rate')
     tf.summary.scalar('learning_rate', learning_rate)
 
-    optimizer = tf.train.MomentumOptimizer(
-        learning_rate=learning_rate,
-        momentum=_MOMENTUM)
+    optimizer = tf.train.GradientDescentOptimizer(
+        learning_rate=learning_rate)
 
     # Batch norm requires update ops to be added as a dependency to the train_op
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
@@ -316,31 +412,40 @@ def cifar10_model_fn(features, labels, mode):
 def main(unused_argv):
   # Using the Winograd non-fused algorithms provides a small performance boost.
   os.environ['TF_ENABLE_WINOGRAD_NONFUSED'] = '1'
+ 
+  ##Temporary solution to run the load only once
+  global load_done
+  load_done = 0
 
   cifar_classifier = tf.estimator.Estimator(
       model_fn=cifar10_model_fn, model_dir=FLAGS.model_dir)
 
   for cycle in range(FLAGS.train_steps // FLAGS.steps_per_eval):
-    tensors_to_log = {
-        'learning_rate': 'learning_rate',
-        'cross_entropy': 'cross_entropy',
-        'train_accuracy': 'train_accuracy'
-    }
+	 tensors_to_log = {
+	     'learning_rate': 'learning_rate',
+	     'cross_entropy': 'cross_entropy',
+	     'train_accuracy': 'train_accuracy'
+	 }
 
-    logging_hook = tf.train.LoggingTensorHook(
-        tensors=tensors_to_log, every_n_iter=100)
+	 logging_hook = tf.train.LoggingTensorHook(
+	     tensors=tensors_to_log, every_n_iter=100)
 
-    cifar_classifier.train(
-        input_fn=lambda: input_fn(tf.estimator.ModeKeys.TRAIN,
-                                  batch_size=FLAGS.batch_size),
-        steps=FLAGS.steps_per_eval,
-        hooks=[logging_hook])
+	 cifar_classifier.train(
+	     input_fn=lambda: input_fn(tf.estimator.ModeKeys.TRAIN,
+	     			  batch_size=FLAGS.batch_size),
+	     steps=FLAGS.steps_per_eval,
+	     hooks=[logging_hook])
 
-    # Evaluate the model and print results
-    eval_results = cifar_classifier.evaluate(
-        input_fn=lambda: input_fn(tf.estimator.ModeKeys.EVAL,
-                                  batch_size=FLAGS.batch_size))
-    print(eval_results)
+	 RETRAIN = FLAGS.retrain
+	 if((load_done == 0) and RETRAIN):
+	     load_done = 1
+	     reload_data(sess)
+
+	 # Evaluate the model and print results
+	 eval_results = cifar_classifier.evaluate(
+	     input_fn=lambda: input_fn(tf.estimator.ModeKeys.EVAL,
+	     			  batch_size=FLAGS.batch_size))
+	 print(eval_results)
 
 
 if __name__ == '__main__':
