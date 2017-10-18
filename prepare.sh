@@ -2,4 +2,8 @@ mkdir data
 mkdir data/train
 mkdir data/model
 mkdir data/model_retrain
-python cifar10_download_and_extract.py
+mkdir imagenet_data
+mkdir imagenet_data/train
+mkdir imagenet_data/model
+mkdir imagenet_data/model_retrain
+#python cifar10_download_and_extract.py
