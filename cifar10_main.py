@@ -436,11 +436,6 @@ def main(unused_argv):
 	     steps=FLAGS.steps_per_eval,
 	     hooks=[logging_hook])
 
-	 RETRAIN = FLAGS.retrain
-	 if((load_done == 0) and RETRAIN):
-	     load_done = 1
-	     reload_data(sess)
-
 	 # Evaluate the model and print results
 	 eval_results = cifar_classifier.evaluate(
 	     input_fn=lambda: input_fn(tf.estimator.ModeKeys.EVAL,
